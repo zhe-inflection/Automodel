@@ -27,13 +27,30 @@ from nemo_automodel.components._peft.lora_kernel import (
     lora_forward_wrapper,
 )
 from nemo_automodel.components._peft.lora_moe import GroupedExpertsDeepEPLoRA, GroupedExpertsLoRA
-from nemo_automodel.components._peft.module_matcher import ModuleMatcher
+from nemo_automodel.components._peft.module_matcher import ModuleMatcher, _is_linear_module
 from nemo_automodel.components.moe.layers import GroupedExperts, GroupedExpertsDeepEP
 from nemo_automodel.shared.import_utils import safe_import
 from nemo_automodel.shared.utils import dtype_from_str
 
 HAS_BNB, bitsandbytes = safe_import("bitsandbytes")
 HAS_TE, transformer_engine = safe_import("transformer_engine")
+
+# Try to import both possible Transformer Engine Linear class paths
+TE_LINEAR_CLASSES = []
+if HAS_TE:
+    # Check for transformer_engine.pytorch.module.linear.Linear (used by GPT-OSS)
+    try:
+        from transformer_engine.pytorch.module.linear import Linear as TE_MODULE_LINEAR
+        TE_LINEAR_CLASSES.append(TE_MODULE_LINEAR)
+    except (ImportError, AttributeError):
+        pass
+    # Check for transformer_engine.pytorch.Linear (legacy/alternative path)
+    try:
+        te_linear_legacy = transformer_engine.pytorch.Linear
+        if te_linear_legacy not in TE_LINEAR_CLASSES:
+            TE_LINEAR_CLASSES.append(te_linear_legacy)
+    except AttributeError:
+        pass
 
 logger = logging.getLogger(__name__)
 
@@ -304,10 +321,11 @@ def patch_linear_module(
     """
     linear_types = [nn.Linear]
     if HAS_TE:
-        linear_types.append(transformer_engine.pytorch.Linear)
+        if TE_LINEAR_CLASSES:
+            linear_types.extend(TE_LINEAR_CLASSES)
         use_triton = False
     if not isinstance(orig_linear, tuple(linear_types)):
-        raise NotImplementedError("Expected isinstance(orig_linear, nn.Linear)")
+        raise NotImplementedError(f"Expected isinstance(orig_linear, nn.Linear or TransformerEngine Linear), got {type(orig_linear)}")
     assert not hasattr(orig_linear, "super_fwd"), orig_linear.super_fwd
 
     linear_lora_cls = TritonLinearLoRA if use_triton else LinearLoRA
@@ -320,10 +338,9 @@ def patch_linear_module(
         getattr(orig_linear, "quant_state", None) is not None
         and orig_linear.quant_state.__class__ == bitsandbytes.functional.QuantState
     ):
-        if HAS_TE:
-            assert not isinstance(orig_linear, transformer_engine.pytorch.Linear), (
-                "quant_state is not supported with transformer_engine.pytorch.Linear"
-            )
+        if HAS_TE and TE_LINEAR_CLASSES:
+            if any(isinstance(orig_linear, te_cls) for te_cls in TE_LINEAR_CLASSES):
+                raise ValueError("quant_state is not supported with transformer_engine Linear")
         orig_linear.super_fwd = orig_linear.forward
 
     orig_linear.__class__ = new_cls
@@ -441,7 +458,7 @@ def apply_lora_to_linear_modules(
                     setattr(parent, child_name, new_module)
         else:
             # Standard Linear patching
-            if isinstance(module, nn.Linear) and matcher.match(module, name):
+            if _is_linear_module(module) and matcher.match(module, name):
                 num_modules_matched += 1
                 # For QLora, set lora_dtype to float16/bfloat16 since base weights are quantized
                 lora_dtype = peft_config.lora_dtype

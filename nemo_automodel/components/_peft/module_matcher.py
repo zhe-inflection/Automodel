@@ -22,9 +22,30 @@ from nemo_automodel.shared.import_utils import safe_import
 
 HAS_TE, transformer_engine = safe_import("transformer_engine")
 
+# Try to import both possible Transformer Engine Linear class paths
+TE_LINEAR_CLASSES = []
+if HAS_TE:
+    # Check for transformer_engine.pytorch.module.linear.Linear (used by GPT-OSS)
+    try:
+        from transformer_engine.pytorch.module.linear import Linear as TE_MODULE_LINEAR
+        TE_LINEAR_CLASSES.append(TE_MODULE_LINEAR)
+    except (ImportError, AttributeError):
+        pass
+    # Check for transformer_engine.pytorch.Linear (legacy/alternative path)
+    try:
+        te_linear_legacy = transformer_engine.pytorch.Linear
+        if te_linear_legacy not in TE_LINEAR_CLASSES:
+            TE_LINEAR_CLASSES.append(te_linear_legacy)
+    except AttributeError:
+        pass
+
 
 def _is_linear_module(module):
-    return isinstance(module, nn.Linear) or (HAS_TE and isinstance(module, transformer_engine.pytorch.Linear))
+    if isinstance(module, nn.Linear):
+        return True
+    if HAS_TE and TE_LINEAR_CLASSES:
+        return any(isinstance(module, te_cls) for te_cls in TE_LINEAR_CLASSES)
+    return False
 
 
 def wildcard_match(pattern, key):
