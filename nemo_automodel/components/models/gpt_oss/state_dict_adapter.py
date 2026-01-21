@@ -182,16 +182,30 @@ class GPTOSSStateDictAdapter(StateDictAdapter):
         # Restore desired DTensor sharding: shard experts (dim 0) by 'ep' and hidden dim (dim 2) by 'ep_shard'.
         if isinstance(out, torch.distributed.tensor.DTensor):
             placements = []
-            mesh_dim_names = out.device_mesh.mesh_dim_names
-            for dim_name in mesh_dim_names:
+            # Filter out dimensions that are not relevant for MoE (pp, dp_replicate, etc.)
+            # Only process ep and ep_shard dimensions
+            relevant_dims = [dim for dim in out.device_mesh.mesh_dim_names if dim in ("ep", "ep_shard")]
+            for dim_name in relevant_dims:
                 if dim_name == "ep":
                     placements.append(torch.distributed.tensor.Shard(0))
                 elif dim_name == "ep_shard":
                     placements.append(torch.distributed.tensor.Shard(2))
-                else:
-                    raise ValueError(f"Unexpected dimension name: {dim_name}")
-            if placements != out.placements:
-                out = out.redistribute(placements=tuple(placements))
+            
+            # If we have relevant dimensions and need to redistribute
+            if relevant_dims:
+                # Build placements list that matches the full mesh, using Replicate for non-relevant dims
+                full_placements = []
+                for dim_name in out.device_mesh.mesh_dim_names:
+                    if dim_name == "ep":
+                        full_placements.append(torch.distributed.tensor.Shard(0))
+                    elif dim_name == "ep_shard":
+                        full_placements.append(torch.distributed.tensor.Shard(2))
+                    else:
+                        # For dimensions like dp_replicate, pp, etc., use Replicate
+                        full_placements.append(torch.distributed.tensor.Replicate())
+                
+                if tuple(full_placements) != out.placements:
+                    out = out.redistribute(placements=tuple(full_placements))
         return out
 
     def to_hf(

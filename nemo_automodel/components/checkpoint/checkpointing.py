@@ -874,7 +874,7 @@ def _maybe_adapt_state_dict_from_hf(
     """
     adapter = getattr(model_part, "state_dict_adapter", None)
     if adapter:
-        ep_mesh_dims = [dim for dim in moe_mesh.mesh_dim_names if dim != "pp"] if moe_mesh is not None else []
+        ep_mesh_dims = [dim for dim in moe_mesh.mesh_dim_names if dim not in ("pp", "dp_replicate")] if moe_mesh is not None else []
         ep_mesh = moe_mesh[tuple(ep_mesh_dims)] if ep_mesh_dims else moe_mesh
         return adapter.from_hf(state_dict, device_mesh=ep_mesh)
     return state_dict
