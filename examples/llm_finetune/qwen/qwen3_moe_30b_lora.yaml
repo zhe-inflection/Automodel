@@ -31,11 +31,12 @@ model:
   torch_dtype: bfloat16
   backend:
     _target_: nemo_automodel.components.models.common.BackendConfig
-    attn: te
+    attn: sdpa
     linear: torch
-    rms_norm: te
-    experts: te
-    dispatcher: deepep
+    rms_norm: torch
+    experts: torch
+    dispatcher: torch
+    rope_fusion: false
     fake_balanced_gate: false
     enable_hf_state_dict_adapter: true
     enable_fsdp_optimizations: true
