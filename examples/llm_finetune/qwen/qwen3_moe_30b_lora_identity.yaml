@@ -1,0 +1,93 @@
+
+# ------------------------------------------------------------------------------------------------
+# WARNING: HARDWARE REQUIREMENTS
+# ------------------------------------------------------------------------------------------------
+# This config targets Qwen3-30B-A3B (30B parameters).
+# It requires at least 8 GPUs (e.g., 8x A100 80GB or 8x H100 80GB) to run,
+# but you can potentially run it on less GPUs by reducing the local batch size.
+# ------------------------------------------------------------------------------------------------
+
+step_scheduler:
+  global_batch_size: 32
+  local_batch_size: 4
+  ckpt_every_steps: 100
+  val_every_steps: 50
+  num_epochs: 10
+  max_steps: 1000
+
+dist_env:
+  backend: nccl
+  timeout_minutes: 20
+
+rng:
+  _target_: nemo_automodel.components.training.rng.StatefulRNG
+  seed: 42
+  ranked: true
+
+model:
+  _target_: nemo_automodel.NeMoAutoModelForCausalLM.from_pretrained
+  pretrained_model_name_or_path: Qwen/Qwen3-30B-A3B
+  trust_remote_code: true
+  torch_dtype: bfloat16
+  backend:
+    _target_: nemo_automodel.components.models.common.BackendConfig
+    attn: sdpa
+    linear: torch
+    rms_norm: torch
+    experts: torch
+    dispatcher: torch
+    rope_fusion: false
+    fake_balanced_gate: false
+    enable_hf_state_dict_adapter: true
+    enable_fsdp_optimizations: true
+
+peft:
+  _target_: nemo_automodel.components._peft.lora.PeftConfig
+  target_modules: ["*"]
+  dim: 32
+  alpha: 32
+  dropout: 0.0
+
+checkpoint:
+  enabled: false
+  checkpoint_dir: checkpoints/qwen3_moe_lora
+  model_save_format: safetensors
+
+moe_config:
+  _target_: nemo_automodel.components.moe.config.MoEParallelizerConfig
+  activation_checkpointing: true
+
+distributed:
+  tp_size: 1
+  cp_size: 1
+  pp_size: 1
+  ep_size: 8
+
+distributed_config:
+  _target_: nemo_automodel.components.distributed.config.FSDP2Config
+
+loss_fn:
+  _target_: nemo_automodel.components.loss.masked_ce.MaskedCrossEntropy
+
+dataset:
+  _target_: nemo_automodel.components.datasets.llm.chat_dataset.ChatDataset
+  path_or_dataset_id: /mnt/home/zhe/projects/data/identity_training_data_train_800.jsonl
+  seq_length: 2048
+  truncation: true
+  # CRITICAL for multi-GPU: pad each sample to seq_length so all ranks have identical tensor shapes.
+  # Without this, default_collater pads to max-within-batch, which differs per rank (DistributedSampler)
+  # -> FSDP all-gather deadlock.
+  padding: max_length
+
+dataloader:
+  _target_: torchdata.stateful_dataloader.StatefulDataLoader
+  collate_fn: nemo_automodel.components.datasets.utils.default_collater
+  shuffle: true
+  num_workers: 4
+
+optimizer:
+  _target_: torch.optim.AdamW
+  lr: 1.0e-3
+  weight_decay: 0.01
+  betas: [0.9, 0.95]
+  eps: 1e-8
