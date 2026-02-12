@@ -52,7 +52,7 @@ def extract_key_from_dicts(batch, key):
     return list(map(lambda x: x[key], batch))
 
 
-def pad_within_micro(batch, pad_token_id, pad_seq_len_divisible=None):
+def pad_within_micro(batch, pad_token_id, pad_seq_len_divisible=None, pad_to_seq_len=None):
     """
     Pads each list in a batch of lists to the same length with a specified token.
 
@@ -62,17 +62,23 @@ def pad_within_micro(batch, pad_token_id, pad_seq_len_divisible=None):
         pad_token_id (int): The token ID to use for padding shorter sequences.
         pad_seq_len_divisible (int): The value to use for padding sequence length so that it is
             divisible by pad_seq_len_divisible.
+        pad_to_seq_len (int): If provided, pad all sequences to this exact length. Use for
+            distributed training to ensure identical tensor shapes across ranks.
 
     Returns:
         List[List[int]]: A batch of sequences where each inner list has been padded with the pad
         token to match the length of the longest sequence in the batch.
     """
     max_len = max(map(len, batch))
-    if pad_seq_len_divisible:
+    if pad_to_seq_len is not None:
+        max_len = pad_to_seq_len  # Force fixed length for FSDP collective consistency
+    elif pad_seq_len_divisible:
         max_len = (pad_seq_len_divisible - max_len % pad_seq_len_divisible) + max_len
     if pad_token_id is None:
         # if it's none, extend the last token
         pad_token_id = batch[0][-1]
+    if pad_to_seq_len is not None:
+        return [item[:max_len] + [pad_token_id] * (max_len - len(item)) for item in batch]
     return [item + [pad_token_id] * (max_len - len(item)) for item in batch]
 
 
@@ -218,13 +224,15 @@ def add_causal_masks_to_batch(batch_dict, model_config):
     return batch_dict
 
 
-def default_collater(batch, pad_seq_len_divisible=None):
+def default_collater(batch, pad_seq_len_divisible=None, pad_to_seq_len=None):
     """
     Default batch collator that handles padding and batching.
 
     Args:
         batch: A batch of examples.
         pad_seq_len_divisible: If provided, pad sequence length to be divisible by this value.
+        pad_to_seq_len: If provided, pad all sequences to this exact length. Required for
+            multi-GPU FSDP to ensure identical tensor shapes across ranks.
 
     Returns:
         dict: A dictionary containing batched tensors.
@@ -238,6 +246,7 @@ def default_collater(batch, pad_seq_len_divisible=None):
             extract_key_from_dicts(batch, key),
             get_pad_token_from_key(key, pad_token_ids),
             pad_seq_len_divisible,
+            pad_to_seq_len,
         )
         for key in batch[0].keys()
     }

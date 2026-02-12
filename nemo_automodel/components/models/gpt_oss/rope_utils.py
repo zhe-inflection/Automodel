@@ -163,19 +163,24 @@ def apply_rotary_emb_qk(
         Tuple of (q, k) with rotary embeddings applied.
     """
     if rope_fusion:
-        from transformer_engine.pytorch.attention.rope import apply_rotary_pos_emb
+        try:
+            from transformer_engine.pytorch.attention.rope import apply_rotary_pos_emb
 
-        q = apply_rotary_pos_emb(
-            q, freqs_cis, tensor_format=format, fused=True, cu_seqlens=cu_seqlens, cp_size=cp_size, cp_rank=cp_rank
-        )
-        k = apply_rotary_pos_emb(
-            k, freqs_cis, tensor_format=format, fused=True, cu_seqlens=cu_seqlens, cp_size=cp_size, cp_rank=cp_rank
-        )
-        if concentration is not None:
-            q = q * concentration
-            k = k * concentration
-        return q, k
-    else:
+            q = apply_rotary_pos_emb(
+                q, freqs_cis, tensor_format=format, fused=True, cu_seqlens=cu_seqlens, cp_size=cp_size, cp_rank=cp_rank
+            )
+            k = apply_rotary_pos_emb(
+                k, freqs_cis, tensor_format=format, fused=True, cu_seqlens=cu_seqlens, cp_size=cp_size, cp_rank=cp_rank
+            )
+            if concentration is not None:
+                q = q * concentration
+                k = k * concentration
+            return q, k
+        except (ImportError, ModuleNotFoundError, AttributeError):
+            # Fall back to non-fused RoPE if transformer_engine is not available
+            rope_fusion = False
+    
+    if not rope_fusion:
         cos, sin = freqs_cis.split(freqs_cis.shape[-1] // 2, dim=-1)
         q = apply_rotary_emb(q, cos, sin)
         k = apply_rotary_emb(k, cos, sin)

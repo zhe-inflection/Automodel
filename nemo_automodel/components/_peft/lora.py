@@ -35,6 +35,15 @@ from nemo_automodel.shared.utils import dtype_from_str
 HAS_BNB, bitsandbytes = safe_import("bitsandbytes")
 HAS_TE, transformer_engine = safe_import("transformer_engine")
 
+# Check if transformer_engine.pytorch.Linear actually exists
+HAS_TE_LINEAR = False
+if HAS_TE:
+    try:
+        _ = transformer_engine.pytorch.Linear
+        HAS_TE_LINEAR = True
+    except (AttributeError, ImportError, TypeError):
+        HAS_TE_LINEAR = False
+
 logger = logging.getLogger(__name__)
 
 
@@ -372,7 +381,7 @@ def patch_linear_module(
         (nn.Module): the monkey-patched (nn.Linear + LoRA) nn.Module
     """
     linear_types = [nn.Linear]
-    if HAS_TE:
+    if HAS_TE_LINEAR:
         linear_types.append(transformer_engine.pytorch.Linear)
         use_triton = False
     if not isinstance(orig_linear, tuple(linear_types)):
@@ -380,7 +389,7 @@ def patch_linear_module(
     assert not hasattr(orig_linear, "super_fwd"), orig_linear.super_fwd
 
     if use_dora:
-        if HAS_TE and isinstance(orig_linear, transformer_engine.pytorch.Linear):
+        if HAS_TE_LINEAR and isinstance(orig_linear, transformer_engine.pytorch.Linear):
             raise ValueError("DoRA is not supported for transformer_engine.pytorch.Linear layers.")
         if getattr(orig_linear, "quant_state", None) is not None:
             raise ValueError("DoRA is not supported for quantized linear layers (e.g., BitsAndBytes).")
@@ -405,7 +414,7 @@ def patch_linear_module(
         getattr(orig_linear, "quant_state", None) is not None
         and orig_linear.quant_state.__class__ == bitsandbytes.functional.QuantState
     ):
-        if HAS_TE:
+        if HAS_TE_LINEAR:
             assert not isinstance(orig_linear, transformer_engine.pytorch.Linear), (
                 "quant_state is not supported with transformer_engine.pytorch.Linear"
             )
@@ -528,7 +537,7 @@ def apply_lora_to_linear_modules(
                     setattr(parent, child_name, new_module)
         else:
             # Standard Linear patching
-            linear_types = [nn.Linear] + ([transformer_engine.pytorch.Linear] if HAS_TE else [])
+            linear_types = [nn.Linear] + ([transformer_engine.pytorch.Linear] if HAS_TE_LINEAR else [])
             if isinstance(module, tuple(linear_types)) and matcher.match(module, name):
                 num_modules_matched += 1
                 # For QLora, set lora_dtype to float16/bfloat16 since base weights are quantized
